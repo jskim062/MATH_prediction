@@ -1,0 +1,6 @@
+pix2tex[gui]
+streamlit
+opencv-python-headless
+Pillow
+pdf2image
+numpy
