@@ -12,3 +12,7 @@ dist/
 build/
 .paddlex/
 .paddleocr/
+problem_library/
+reference_books/
+.cache_info.json
+*.pdf
