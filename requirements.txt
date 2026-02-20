@@ -1,8 +1,8 @@
-paddlepaddle
-paddleocr
-pix2tex[gui]
+reportlab
+openai
 streamlit
-opencv-python-headless
-Pillow
+google-generativeai
+pillow
 pymupdf
 numpy
+watchdog

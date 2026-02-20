@@ -67,27 +67,20 @@ class VLMEngine:
         [Stage 1: Lite] Extracts structured problem data (no solutions).
         """
         extract_prompt = (
-            "너는 전문 수학 문제 추출기야. 이미지에서 각 수학 문제를 추출해서 다음 XML 형식으로 응답해 줘.\n\n"
-            "**작성 규칙:**\n"
-            "1. 모든 수식은 LaTeX 형식으로 변환할 것.\n"
-            "2. JSON이 아니므로 백슬래시(\\)나 따옴표를 이스케이프할 필요 없음. 있는 그대로 작성할 것.\n"
-            "3. 각 문제는 `<problem>` 태그로 감싸고, 그 안에 세부 태그를 작성할 것.\n"
-            "4. 문제의 **전문(지문과 수식 포함)**을 한 글자도 빠짐없이 `<content>` 태그에 LaTeX 형식으로 작성할 것.\n"
-            "   - 모든 수식과 기호는 $ (inline) 또는 $$ (block)로 감싸서 LaTeX로 변환할 것.\n\n"
-            "**XML 구조 예시:**\n"
-            "<root>\n"
-            "  <problem>\n"
-            "    <number>1</number>\n"
-            "    <content>여기에 지문과 $수식$을 섞어서 문제 전문을 작성...</content>\n"
-            "    <options>\n"
-            "      <option>보기1</option>\n"
-            "      <option>보기2</option>\n"
-            "    </options>\n"
-            "    <score>10</score>\n"
-            "    <image_description>그래프 설명</image_description>\n"
-            "  </problem>\n"
-            "</root>\n\n"
-            "위 형식을 정확히 지켜서 응답해 줘."
+            "You are a math problem extractor. Extract problems from the image in XML format:\n"
+            "1. Each problem in `<problem>` tags.\n"
+            "2. Full problem content (text + LaTeX) in `<content>`. \n"
+            "   - **IMPORTANT**: Euclidean geometry, calculus, and algebra expressions MUST be in LaTeX format.\n"
+            "   - Use `$` for inline math (e.g., $x^2$, $f(x)$) and `$$` for block math.\n"
+            "   - Use standard LaTeX commands: `\\frac` for fractions, `\\lim_{x \\to 0}` for limits, `\\sqrt` for roots.\n"
+            "3. Separate tags for `<number>`, `<options>`, `<score>`, and `<image_description>`.\n"
+            "\nExample:\n"
+            "<problem>\n"
+            "  <number>1</number>\n"
+            "  <content>Determine the value of $\\lim_{h \\to 0} \\frac{f(4+h)-f(4)}{h}$.</content>\n"
+            "  <options><option>A</option></options>\n"
+            "  <image_description>... or None</image_description>\n"
+            "</problem>"
         )
         try:
             # New SDK call
@@ -99,32 +92,30 @@ class VLMEngine:
         except Exception as e:
             return f"Error during extraction: {e}"
 
-    def solve_problem(self, problem_text: str, stream: bool = False, image: Image.Image = None):
+    def solve_problem(self, problem_text: str, stream: bool = False, image: Image.Image = None, use_cache: bool = True):
         """
-        [Stage 2: Pro] Generates a concise but clear solution using reference context if available.
-        If image is provided, it is included in the prompt for visual verification (Re-scan).
+        [Stage 2: Pro] Generates a clear and step-by-step solution.
         """
         solve_prompt = (
-            f"다음 수학 문제에 대한 상세 풀이 과정을 작성해 줘. \n\n{problem_text}\n\n"
-            "지침:\n"
-            "1. 수식은 LaTeX($$)를 활용할 것.\n"
-            "2. 핵심 흐름 위주로 간결하게 설명할 것.\n"
-            "3. 마지막에 반드시 다음 형식으로 난이도 분석을 XML 블록으로 추가할 것:\n"
+            f"Please solve the following math problem:\n\n{problem_text}\n\n"
+            "Instructions:\n"
+            "1. Use LaTeX ($$) for all mathematical expressions.\n"
+            "2. Provide a clear, concise step-by-step logical explanation.\n"
+            "3. Append a difficulty analysis in the following XML format at the end:\n"
             "<analysis>\n"
-            "  <level>난이도 레벨 (1~6 정수)</level>\n"
-            "  <conceptual_reason>개념적 복잡도 설명</conceptual_reason>\n"
-            "  <logical_reason>논리적 추론 단계 설명</logical_reason>\n"
-            "  <computational_reason>계산 복잡도 설명</computational_reason>\n"
-            "  <summary>종합적인 난이도 평 및 조언</summary>\n"
+            "  <level>Integer 1-6</level>\n"
+            "  <conceptual_reason>Explanation</conceptual_reason>\n"
+            "  <logical_reason>Explanation</logical_reason>\n"
+            "  <computational_reason>Explanation</computational_reason>\n"
+            "  <summary>Overall comment</summary>\n"
             "</analysis>\n"
-            "4. 최종 정답(숫자 또는 최종 표현식)은 반드시 `<final_answer>값</final_answer>` 태그로 감싸서 풀이 과정 끝에 포함할 것.\n"
+            "4. Provide the final numeric or algebraic answer inside `<final_answer>value</final_answer>` tags.\n"
         )
         
         if image:
              solve_prompt = (
-                 "**[Visual Re-scan Requested]**\n"
-                 "The text extraction might be incorrect. Please use the provided image to verify the problem text and numbers, "
-                 "then solve the problem correctly based on the image content.\n\n"
+                 "Please use the attached image to verify the problem statement and numbers before solving. "
+                 "The image content is the primary source of truth.\n\n"
                  + solve_prompt
              )
         
@@ -133,7 +124,7 @@ class VLMEngine:
             contents.append(image)
 
         try:
-            if self.reference_cache_name:
+            if self.reference_cache_name and use_cache:
                 try:
                     # Check .cache_info.json for model name
                     cached_model = "models/gemini-2.5-pro" # Default fallback

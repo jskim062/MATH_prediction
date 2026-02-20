@@ -16,6 +16,7 @@ import traceback
 import threading
 import re
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+import pdf_generator  # New module for PDF generation
 
 # Page Config
 st.set_page_config(page_title="Math Problem Extractor", page_icon="📝", layout="wide")
@@ -65,13 +66,18 @@ def render_single_problem(idx, prob, display_image, vlm_engine):
             st.markdown(f"- **Logical:** {diff.get('logical', 'N/A')}")
             st.markdown(f"- **Computational:** {diff.get('computational', 'N/A')}")
             st.info(f"Summary: {diff.get('summary', '')}")
+            
+    # Use helper for shared display logic (solution, options, graphs)
+    render_problem_details(prob, display_image, vlm_engine)
 
+def render_problem_details(prob, display_image, vlm_engine):
+    """Helper for shared display logic: solution, options, and graphs."""
     # Solving Process (Visible by default)
     if prob.get("solution"):
         st.markdown("**📝 Solving Process:**")
         st.markdown(prob.get("solution"))
     
-    # Options
+    # Options (Rendered if not already in content)
     if prob.get("options"):
         st.markdown("**Options:**")
         for opt_idx, opt in enumerate(prob.get("options", [])):
@@ -79,7 +85,7 @@ def render_single_problem(idx, prob, display_image, vlm_engine):
 
     # Graph Section
     desc = prob.get("image_description", "")
-    if desc and desc.lower() != "none" and len(desc) > 5 and display_image is not None:
+    if desc and desc.lower() != "none" and len(desc) > 5 and display_image is not None and vlm_engine is not None:
         st.info(f"🔍 Visual Element: {desc}")
         coords = vlm_engine.detect_graph_coordinates(display_image, desc)
         if coords:
@@ -102,8 +108,58 @@ def render_single_problem(idx, prob, display_image, vlm_engine):
     if prob.get("raw_content"):
         with st.expander("📄 Raw Extraction Data"):
             st.code(prob.get("raw_content"))
-
+    
     st.write("---")
+
+def render_editable_problem(idx, prob, display_image, vlm_engine):
+    """Renders a problem with editing capabilities."""
+    score_info = f" ({prob.get('score')} pts)" if prob.get('score') else ""
+    st.markdown(f"**[Problem {prob.get('number', idx+1)}]{score_info}**")
+    
+    # Editable Content
+    current_content = prob.get("content") or prob.get("text", "")
+    new_content = st.text_area(
+        f"Edit Problem {prob.get('number', idx+1)} Content (LaTeX supported)",
+        value=current_content,
+        height=150,
+        key=f"edit_content_{idx}"
+    )
+    
+    # Update state immediately if changed
+    if new_content != current_content:
+        prob["content"] = new_content
+        prob["text"] = new_content
+    
+    # Preview (Rendered)
+    if new_content:
+        st.caption("Preview:")
+        st.markdown(new_content)
+    
+    # Editable Options
+    if prob.get("options"):
+        st.markdown("**Options Editor:**")
+        current_options = prob.get("options", [])
+        options_text = "\n".join(current_options)
+        new_options_text = st.text_area(
+            f"Edit Options (One per line)",
+            value=options_text,
+            height=100,
+            key=f"edit_options_{idx}"
+        )
+        new_options = [opt.strip() for opt in new_options_text.split('\n') if opt.strip()]
+        if new_options != current_options:
+            prob["options"] = new_options
+
+    # Difficulty Level Display (Editable or just view?)
+    # For now, keep viewing logic from render_single but allow shared details
+    if prob.get("difficulty"):
+        diff = prob.get("difficulty")
+        level = int(diff.get("level", 0))
+        stars = "⭐" * level + "☆" * (6 - level)
+        st.markdown(f"**Difficulty:** {stars} (Level {level}/6)")
+
+    # Use helper for shared display logic (solution, options, graphs)
+    render_problem_details(prob, display_image, vlm_engine)
 
 def save_to_library(result_json, source_name):
     """Saves problems to a structured directory."""
@@ -143,6 +199,58 @@ def library_browser_tab(vlm_engine):
     selected_source = st.selectbox("Select Source", sources)
     source_path = os.path.join(level_path, selected_source)
     probs = sorted([f for f in os.listdir(source_path) if f.endswith(".json")])
+    
+    # --- Workbook Export Section ---
+    if probs:
+        with st.expander("🖨️ Export Workbook (PDF)", expanded=False):
+            st.write("Select problems to include in the workbook:")
+            
+            # Select All Toggle
+            select_all = st.checkbox("Select All", value=False, key="select_all_probs")
+            
+            selected_files = []
+            cols = st.columns(3)
+            for i, p_file in enumerate(probs):
+                is_selected = cols[i % 3].checkbox(p_file, value=select_all, key=f"sel_{p_file}")
+                if is_selected:
+                    selected_files.append(p_file)
+            
+            if selected_files:
+                st.info(f"{len(selected_files)} problems selected.")
+                if st.button("Generate PDF Workbook"):
+                    with st.spinner("Generating PDF..."):
+                        # Load selected problems
+                        export_probs = []
+                        for pf in selected_files:
+                            with open(os.path.join(source_path, pf), "r", encoding="utf-8") as f:
+                                export_probs.append(json.load(f))
+                                
+                        # Generate PDF
+                        safe_title = f"Workbook_{selected_source}"
+                        pdf_path = f"{safe_title}.pdf"
+                        try:
+                            pdf_file = pdf_generator.generate_workbook(
+                                export_probs, 
+                                title=f"Math Workbook - {selected_source}",
+                                author="GenAI Math Teacher",
+                                output_path=pdf_path
+                            )
+                            
+                            with open(pdf_file, "rb") as f:
+                                pdf_bytes = f.read()
+                                
+                            st.download_button(
+                                label="⬇️ Download PDF Workbook",
+                                data=pdf_bytes,
+                                file_name=pdf_path,
+                                mime="application/pdf"
+                            )
+                            st.success("PDF Generated successfully!")
+                        except Exception as e:
+                            st.error(f"Failed to generate PDF: {e}")
+            else:
+                st.caption("Select at least one problem to export.")
+
     st.divider()
     
     selected_prob_file = st.selectbox("Select Problem", probs)
@@ -170,16 +278,16 @@ def library_browser_tab(vlm_engine):
                     with st.spinner("AI is thinking..."):
                         context_prompt = (
                             f"The user is asking about the following math problem:\n\n"
-                            f"Problem: {prob_data.get('text')}\n"
+                            f"Problem: {prob_data.get('content') or prob_data.get('text')}\n"
                             f"Solution: {prob_data.get('solution')}\n"
                             f"Options: {prob_data.get('options')}\n\n"
                             f"User Query: {prompt}"
                         )
-                        response = vlm_engine.solve_problem(context_prompt)
+                        response = vlm_engine.solve_problem(context_prompt, use_cache=st.session_state.get("use_cache", True))
                         st.markdown(response)
                         st.session_state.chat_history.append({"role": "assistant", "content": response})
 
-def display_results(result_json, display_image, vlm_engine):
+def display_results(result_json, display_image, vlm_engine, key_prefix="default"):
     """
     Displays results: LaTeX-rendered problems only.
     """
@@ -189,12 +297,19 @@ def display_results(result_json, display_image, vlm_engine):
     # st.divider()
     
     st.subheader("Rendered View (LaTeX)")
+    
+    # Edit Mode Toggle
+    edit_mode = st.toggle("✏️ Edit Mode", value=False, help="Switch to Edit Mode to modify problem text before saving.", key=f"edit_mode_{key_prefix}")
+
     if "problems" not in result_json or not result_json["problems"]:
         st.warning("No problems were found.")
         return
 
     for idx, prob in enumerate(result_json["problems"]):
-        render_single_problem(idx, prob, display_image, vlm_engine)
+        if edit_mode:
+            render_editable_problem(idx, prob, display_image, vlm_engine)
+        else:
+            render_single_problem(idx, prob, display_image, vlm_engine)
 
 
 # Helper Functions
@@ -218,12 +333,12 @@ def parse_problems_xml(text):
         except ValueError:
             p["number"] = num_str
         
-        text_match = re.search(r'<text>(.*?)</text>', block, re.DOTALL)
-        p["text"] = text_match.group(1).strip() if text_match else ""
-        
-        # Unified Content (LaTeX integrated)
+        # Unified Content (LaTeX integrated) - Primary source
         content_match = re.search(r'<content>(.*?)</content>', block, re.DOTALL)
         p["content"] = content_match.group(1).strip() if content_match else ""
+        
+        text_match = re.search(r'<text>(.*?)</text>', block, re.DOTALL)
+        p["text"] = text_match.group(1).strip() if text_match else (p["content"] if p["content"] else "")
         
         # Support multiple formulas (Legacy/Metadata)
         formulas = re.findall(r'<formula>(.*?)</formula>', block, re.DOTALL)
@@ -266,19 +381,26 @@ def parse_answer(solution_text):
              except: pass
     return None
 
-def solve_task(prob, img, vlm_engine):
-    """Worker function for parallel solving with smart retries."""
+def solve_task_core(prob, img, vlm_engine, use_cache=True):
+    """The actual logic for solving a problem."""
     def qextract(tag, text):
         m = re.search(f'<{tag}>(.*?)</{tag}>', text, re.DOTALL)
         return m.group(1).strip() if m else ""
 
-    prob_text = f"{prob.get('text', '')} {prob.get('formula', '')}"
-    if prob.get('options'):
-        prob_text += f"\nOptions: {', '.join(prob.get('options'))}"
+    # Prefer 'content' (unified LaTeX) over legacy 'text'
+    # Check if options are already part of the content to avoid double data
+    content = prob.get('content') or f"{prob.get('text', '')} {prob.get('formula', '')}"
+    prob_text = content
+    
+    options = prob.get('options', [])
+    if options:
+        # If options are not clearly at the end of content, append them
+        if not all(opt in content for opt in options):
+            prob_text += f"\nOptions:\n" + "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(options)])
     
     try:
         # Initial solve
-        res = vlm_engine.solve_problem(prob_text, stream=False)
+        res = vlm_engine.solve_problem(prob_text, stream=False, use_cache=use_cache)
         full_sol = res.text if hasattr(res, 'text') else str(res)
         
         # Smart Retry Check
@@ -300,7 +422,7 @@ def solve_task(prob, img, vlm_engine):
 
         if needs_retry:
             # Retry with image scan
-            res_retry = vlm_engine.solve_problem(prob_text, stream=False, image=img)
+            res_retry = vlm_engine.solve_problem(prob_text, stream=False, image=img, use_cache=use_cache)
             full_sol = res_retry.text if hasattr(res_retry, 'text') else str(res_retry)
 
         # Parse final result
@@ -325,6 +447,17 @@ def solve_task(prob, img, vlm_engine):
     except Exception as e:
         return {"solution": f"Error: {e}", "difficulty": {}}
 
+def solve_task(prob, img, vlm_engine, use_cache=True):
+    """Wrapper for solve_task_core with a 120-second timeout."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(solve_task_core, prob, img, vlm_engine, use_cache)
+        try:
+            return future.result(timeout=120)
+        except concurrent.futures.TimeoutError:
+            return {"solution": "Error: Solving timed out (exceeded 120s)", "difficulty": {}}
+        except Exception as e:
+            return {"solution": f"Error during solving: {e}", "difficulty": {}}
+
 def run_hybrid_process(img, vlm_engine, status_container=None):
     """Parallel problem solving for a single image/page."""
     if not vlm_engine: return None
@@ -345,7 +478,8 @@ def run_hybrid_process(img, vlm_engine, status_container=None):
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 ctx = get_script_run_ctx()
-                futures = {executor.submit(run_with_ctx, ctx, solve_task, p, img, vlm_engine): i for i, p in enumerate(data["problems"])}
+                use_cache = st.session_state.get("use_cache", True)
+                futures = {executor.submit(run_with_ctx, ctx, solve_task, p, img, vlm_engine, use_cache): i for i, p in enumerate(data["problems"])}
                 for future in concurrent.futures.as_completed(futures):
                     i = futures[future]
                     try:
@@ -376,6 +510,7 @@ else:
     if vlm_engine.reference_cache_name:
         st.sidebar.success(f"✅ Cache Active")
         st.sidebar.caption(f"ID: {vlm_engine.reference_cache_name[:15]}...")
+        st.session_state.use_cache = st.sidebar.checkbox("Use Reference Context", value=True, help="If checked, AI will use reference books for reasoning.")
     else:
         st.sidebar.warning("⚠️ No Active Cache")
         
@@ -464,7 +599,8 @@ if uploaded_file:
 
                         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                             ctx = get_script_run_ctx()
-                            futures = {executor.submit(run_with_ctx, ctx, solve_task, p, image, vlm_engine): i for i, p in enumerate(data["problems"])}
+                            use_cache = st.session_state.get("use_cache", True)
+                            futures = {executor.submit(run_with_ctx, ctx, solve_task, p, image, vlm_engine, use_cache): i for i, p in enumerate(data["problems"])}
                             for future in concurrent.futures.as_completed(futures):
                                 i = futures[future]
                                 try:
@@ -475,7 +611,7 @@ if uploaded_file:
                                     status_ui[i].error(f"Problem {data['problems'][i]['number']}: ❌ Failed ({e})")
 
                         st.divider()
-                        display_results(data, image, vlm_engine)
+                        display_results(data, image, vlm_engine, key_prefix="extraction")
                         st.session_state.last_results = data
                         
         if "last_results" in st.session_state:
@@ -542,13 +678,13 @@ if uploaded_file:
                 solve_states = ["⏳ Waiting..."] * len(all_solve_tasks)
                 status_lock = threading.Lock()
                 
-                def solve_worker(idx, task_item):
+                def solve_worker(idx, task_item, use_cache=True):
                     try:
                         with status_lock:
                             solve_states[idx] = "🔄 Solving..."
                         print(f"[THREAD] Starting solve: Prob {task_item['prob']['number']}")
                         
-                        res = solve_task(task_item['prob'], task_item['img'], vlm_engine)
+                        res = solve_task(task_item['prob'], task_item['img'], vlm_engine, use_cache=use_cache)
                         task_item['prob'].update(res)
                         
                         with status_lock:
@@ -561,7 +697,8 @@ if uploaded_file:
                     return idx
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-                    futures = [executor.submit(solve_worker, i, task) for i, task in enumerate(all_solve_tasks)]
+                    use_cache = st.session_state.get("use_cache", True)
+                    futures = [executor.submit(solve_worker, i, task, use_cache) for i, task in enumerate(all_solve_tasks)]
                     
                     total_tasks = len(all_solve_tasks)
                     while True:
@@ -598,7 +735,7 @@ if uploaded_file:
                         st.markdown(f"## Page {p_num}")
                         page_data = {"problems": [t['prob'] for t in page_tasks]}
                         # Use first problem's image for header
-                        display_results(page_data, page_tasks[0]['img'], vlm_engine)
+                        display_results(page_data, page_tasks[0]['img'], vlm_engine, key_prefix=f"page_{p_num}")
                         st.divider()
 
                 if "global_results" in st.session_state:
